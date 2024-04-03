@@ -147,6 +147,10 @@ func (ms msgServer) AddLiquidity(ctx context.Context, msg *simpleswap.MsgAddLiqu
 	// See if the accrued fees by liquidity provider is equal to the globally accrued fees
 	if accruedFeesGloballyRecordedByLP != globallyAccruedFeesCurrent {
 		// Calculate the fees and update the Pool
+		// We do this by calculating the difference between the fees that was accrued
+		// gloally when the user's share was last updated, and the latest fees that
+		// has been accrued globally, once we have this difference we give away the
+		// fees share of the LP, proportionally according to the liquidity provided by it.
 		diff := globallyAccruedFeesCurrent - accruedFeesGloballyRecordedByLP
 		accruedFeesByLP += (diff * poolShare.Amount.Int64()) / currentPoolState.TotalLiquidity
 	}
@@ -276,7 +280,7 @@ func (ms msgServer) SwapLiquidity(ctx context.Context, msg *simpleswap.MsgSwapLi
 		return &simpleswap.MsgSwapLiquidityResponse{
 			StatusCode: 400,
 		}, fmt.Errorf("error: %w, for the denom: %s", simpleswap.ErrCoinInvalid, msg.Output.Denom)
-			
+
 	}
 
 	// Get the liquidity provider address in AccAddress format
@@ -340,7 +344,9 @@ func (ms msgServer) SwapLiquidity(ctx context.Context, msg *simpleswap.MsgSwapLi
 	}
 
 	// Calculate Fees and charge it from the output token
-	// TODO: Explain the below conversions and calculations
+	// We DEDUCT 0.3% of the Amount that the trader is going to receive as part of the swap,
+	// as "SwapFee". This is calculated as:
+	// swapFee = (Amount * swapFeePercentage) / (10 ^ Decimals * 100)
 	swapFeePercentage := currentPoolState.SwapFeePercentage
 	swapFee := msg.Output.Amount.Mul(math.NewInt(int64(swapFeePercentage))).Quo(math.NewInt(int64(maths.Pow10(int(currentPoolState.Decimals))) * int64(100)))
 
@@ -412,7 +418,13 @@ func (ms msgServer) RemoveLiquidity(ctx context.Context, msg *simpleswap.MsgRemo
 		}, err
 	}
 
-	// TODO: Add check for same denomination
+	// Check for same denomination i.e. the LP is withdrawing
+	// the same coins that it has provided earlier
+	if liquidityProvider.StableCoin.Denom != msg.Token.Denom {
+		return &simpleswap.MsgRemoveLiquidityResponse{
+			StatusCode: 400,
+		}, fmt.Errorf("error: %w the user has not provided coins of %s denom", simpleswap.ErrCoinInvalid, msg.Token.Denom)
+	}
 
 	// Convert the address to AccAddress
 	addr, err := types.AccAddressFromBech32(msg.LiquidityProvider)
@@ -442,7 +454,10 @@ func (ms msgServer) RemoveLiquidity(ctx context.Context, msg *simpleswap.MsgRemo
 	globallyAccruedFeesRecordedByUser := liquidityProvider.GloballyAccruedFees
 
 	// Calculate the fees and update the liquidity provider
-	// TODO: Explain the below calculations
+	// We do this by calculating the difference between the fees that was accrued
+	// gloally when the user's share was last updated, and the latest fees that
+	// has been accrued globally, once we have this difference we give away the
+	// fees share of the LP, proportionally according to the liquidity provided by it.
 	if accruedFeesGlobally != globallyAccruedFeesRecordedByUser {
 		diff := accruedFeesGlobally - globallyAccruedFeesRecordedByUser
 		liquidityProvider.AccruedFees += (diff * liquidityProvider.PoolShare.Amount.Int64()) / currentPoolState.TotalLiquidity
@@ -524,7 +539,7 @@ func (ms msgServer) RemoveLiquidity(ctx context.Context, msg *simpleswap.MsgRemo
 			}, err
 		}
 	}
-	
+
 	// Add the accrued fees to the output coin
 	msg.Token.Amount = msg.Token.Amount.Add(math.NewInt(accruedFees))
 
